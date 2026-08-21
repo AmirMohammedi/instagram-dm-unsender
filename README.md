@@ -1,5 +1,7 @@
 # Instagram DM Unsender
 
+[![Install with Tampermonkey](https://img.shields.io/badge/Install%20with-Tampermonkey-blue?logo=tampermonkey)](https://raw.githubusercontent.com/AmirMohammedi/instagram-dm-unsender/main/idmu.user.js)
+
 A userscript that unsends every message **you** sent in an Instagram DM thread, one at a time, from the newest backwards — built to survive conversations with tens of thousands of messages.
 
 It adds a small draggable panel to Instagram Web with a start/stop button, live counters and a status line. Everything runs in your browser against the normal Instagram UI: there is no server, no API token and no third party involved.
@@ -15,7 +17,7 @@ It adds a small draggable panel to Instagram Web with a start/stop button, live 
 ## Install
 
 1. Install a userscript manager — [Violentmonkey](https://violentmonkey.github.io/) or [Tampermonkey](https://www.tampermonkey.net/).
-2. Open [`idmu.user.js`](idmu.user.js), click **Raw**, and confirm the install prompt.
+2. Click the **Install** badge above — or open [`idmu.user.js`](idmu.user.js) and click **Raw** — and confirm the install prompt.
 3. Reload `instagram.com`.
 
 There is no build step: the script is a single self-contained file with no dependencies (`@grant none`).
