@@ -41,7 +41,7 @@ A per-conversation running total is kept in `localStorage`, so the hint line tel
 
 Instagram only renders the "…" menu on a message when you actually hover it, and only keeps a small window of the thread in the DOM. So a run is a loop:
 
-1. **Scan** the loaded part of the thread for the next message of yours, scrolling a viewport at a time and resuming where the previous scan stopped.
+1. **Scan** the loaded part of the thread for the next message of yours, scrolling a viewport at a time. The scan cursor is a frontier: everything between it and the newest message has already been cleared, so a scan resumes there instead of re-crossing the whole conversation.
 2. **Unsend it** by replaying what a real cursor does: hover the row, open the "…" menu, pick *Unsend*, confirm the dialog.
 3. **Verify** it actually went away — Instagram removes the row optimistically and puts it back when the server refuses.
 4. When nothing of yours is left on screen, **load one older page** and repeat.
@@ -54,6 +54,8 @@ Deliberate design decisions worth knowing about:
 - **The end of the thread is confirmed four times** before the run declares itself finished.
 - **Requests are paced** 1–2 seconds apart with jitter, and a message that reappears after an unsend is treated as a rate limit and backed off from.
 - **Sender detection is cached** on each row. Working it out requires `getComputedStyle`, which forces a style recalculation; a message's author never changes, so it is computed once.
+- **Nothing walks the whole thread.** Locating the row container and counting rows are needed constantly, so the container is resolved once and kept, and the search that finds it stops at the container rather than descending into every message. Both costs would otherwise grow with each page loaded, which is what makes deeply paged conversations crawl.
+- **Before declaring the thread finished**, the run sweeps the entire loaded conversation once, to pick up any row Instagram had not rendered when the scan first passed over it.
 - **The panel is built node by node**, never through `innerHTML`, so it keeps working under Instagram's Trusted Types policy.
 
 ## Layout of the script
@@ -91,7 +93,7 @@ Everything that depends on Instagram's markup lives in the `SELECTORS` object at
 - Instagram Web only — there is no mobile equivalent, and the script does nothing in the app's mobile layout.
 - Only messages you sent can be unsent, which is an Instagram limitation, not a script one.
 - The *Unsend* menu item is matched against a fixed list of localisations (English, Italian, Portuguese, Spanish, French, German). Other interface languages need one line added to `UNSEND_LABELS`.
-- When the unsend workflow fails on a message, its recovery step presses <kbd>Esc</kbd> to close any leftover dialog — and the panel's own keyboard lock treats that as a stop request, so the run ends rather than retrying the message. Restart the run to continue past it.
+- A message whose workflow fails is retried with exponential backoff, but five failures in a row end the run — normally a sign that Instagram is rate limiting the account rather than that anything is broken.
 
 ## Compatibility
 

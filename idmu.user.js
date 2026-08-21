@@ -163,6 +163,8 @@
         senderDepth: 8,
         /** How deep to look for the div that actually holds the message rows. */
         rowContainerDepth: 3,
+        /** A node with more children than this is the row container, not a wrapper. */
+        rowContainerFanout: 32,
         /** Give up on the run after this many message failures in a row. */
         consecutiveFailures: 5,
         /** How many consecutive "end of thread" verdicts before we believe it. */
@@ -566,6 +568,11 @@
      * row container is however always the descendant with by far the most children, one
      * per message, so the shallow subtree is searched for exactly that.
      *
+     * The search stops at any node wide enough to be the container itself: its children
+     * are individual messages, so nothing bigger can be hiding inside. Descending into
+     * them instead walks every message in the thread, which turns this lookup into the
+     * most expensive thing the script does once a conversation has been paged back far.
+     *
      * @param {Element} scroller
      * @returns {Element}
      */
@@ -578,11 +585,14 @@
                 return;
             }
             for (const child of element.children) {
-                if (child.children.length > bestCount) {
+                const count = child.children.length;
+                if (count > bestCount) {
                     best = child;
-                    bestCount = child.children.length;
+                    bestCount = count;
                 }
-                search(child, depth + 1);
+                if (count <= LIMITS.rowContainerFanout) {
+                    search(child, depth + 1);
+                }
             }
         };
         search(scroller, 0);
@@ -656,20 +666,20 @@
      * Claims the next unprocessed message of ours that is currently on screen, marking
      * it so that it is not handed out twice.
      *
-     * @param {Element} scroller
+     * @param {Element} container - the row container
      * @param {AbortSignal} signal
      * @param {Window} window
      * @returns {Element|null}
      */
-    function claimVisibleOwnMessage(scroller, signal, window) {
-        const container = findRowContainer(scroller);
+    function claimVisibleOwnMessage(container, signal, window) {
         if (container === null) {
             return null;
         }
 
         const candidates = [];
         for (const row of container.children) {
-            // Cheap attribute tests first: they knock out most rows without touching layout.
+            // Cheap attribute tests first: they knock out most rows without touching
+            // layout, and every row ruled out here stays ruled out for the whole run.
             if (row.hasAttribute(MARKER.ignore) || row.hasAttribute(MARKER.unsent)) {
                 continue;
             }
@@ -1025,6 +1035,8 @@
         /**
          * @param {Element} scroller - the scrollable element holding the conversation
          */
+        #rowContainer = null;
+
         constructor(scroller) {
             this.scroller = scroller;
             this.window = scroller.ownerDocument.defaultView;
@@ -1034,51 +1046,48 @@
         /**
          * Finds the next message of ours to unsend, scrolling as needed.
          *
-         * Two passes: the first resumes from the scan cursor, the second sweeps the whole
-         * loaded region from the newest message, which covers the case where the DOM
-         * shifted underneath us.
+         * The scan cursor is a frontier, not a hint: everything between the newest
+         * message and the cursor has already been swept, so a scan resumes there and
+         * only ever moves towards the oldest end. Restarting from the newest message on
+         * every scan means re-crossing the entire loaded conversation before reaching
+         * the point where work is actually happening, and that cost grows with every
+         * page loaded.
+         *
+         * `fromNewest` asks for the full sweep anyway. It is worth paying for exactly
+         * once, when the loader claims the thread is exhausted: a row can be missed
+         * mid-run if Instagram had not rendered it as the scan passed over it.
          *
          * @param {AbortSignal} signal
+         * @param {{fromNewest?: boolean}} [options]
          * @returns {Promise<MessageRow|null>}
          */
-        async findNextOwnMessage(signal) {
+        async findNextOwnMessage(signal, { fromNewest = false } = {}) {
             // Cheapest case by far: something of ours is already on screen.
             const onScreen = this.#claimHere(signal);
             if (onScreen !== null) {
                 return onScreen;
             }
 
+            const { newest, oldest } = this.#scrollRange();
             // Step by most of a viewport. A sub-viewport step just re-tests the same screen.
             const step = Math.max(120, Math.floor(this.scroller.clientHeight * 0.8));
+            let position = fromNewest || this.cursor === null
+                ? newest
+                : clamp(this.cursor, oldest, newest);
+            console.debug(`findNextOwnMessage from=${position} to=${oldest} step=${step}`);
 
-            for (let pass = 0; pass < 2; pass++) {
+            while (position > oldest) {
                 if (signal.aborted) {
                     return null;
                 }
-                const { newest, oldest } = this.#scrollRange();
-                let position = pass === 0 && this.cursor !== null
-                    ? clamp(this.cursor, oldest, newest)
-                    : newest;
-                console.debug(`findNextOwnMessage pass=${pass} from=${position} to=${oldest} step=${step}`);
-
-                while (position > oldest) {
-                    if (signal.aborted) {
-                        return null;
-                    }
-                    const found = await this.#probeAt(position, signal);
-                    if (found !== null) {
-                        return found;
-                    }
-                    position = Math.max(position - step, oldest);
-                }
-                // Always test the far end of the range as well.
-                const found = await this.#probeAt(oldest, signal);
+                const found = await this.#probeAt(position, signal);
                 if (found !== null) {
                     return found;
                 }
+                position = Math.max(position - step, oldest);
             }
-
-            return null;
+            // Always test the far end of the range as well.
+            return signal.aborted ? null : this.#probeAt(oldest, signal);
         }
 
         /**
@@ -1191,7 +1200,7 @@
          */
         #claimHere(signal) {
             try {
-                const element = claimVisibleOwnMessage(this.scroller, signal, this.window);
+                const element = claimVisibleOwnMessage(this.#rows, signal, this.window);
                 return element === null ? null : new MessageRow(element);
             } catch (ex) {
                 console.error(ex);
@@ -1223,10 +1232,28 @@
         }
 
         /**
+         * The container holding the message rows, resolved once and kept.
+         *
+         * Finding it means walking the scroller's subtree, and it is needed on every
+         * probe and on every poll of a page load. React keeps the same container across
+         * page loads, so it is only looked up again if it goes away or comes back empty.
+         *
+         * @type {Element}
+         */
+        get #rows() {
+            const cached = this.#rowContainer;
+            if (cached !== null && cached.isConnected && cached.children.length > 0) {
+                return cached;
+            }
+            this.#rowContainer = findRowContainer(this.scroller);
+            return this.#rowContainer;
+        }
+
+        /**
          * @returns {number} how many message rows are currently in the DOM
          */
         #rowCount() {
-            const container = findRowContainer(this.scroller);
+            const container = this.#rows;
             return container === null ? 0 : container.children.length;
         }
 
@@ -1367,12 +1394,7 @@
                 }
 
                 this.#setStatus(`Looking for your next message… (${this.#formattedCount()} unsent)`);
-                let message = null;
-                try {
-                    message = await this.thread.findNextOwnMessage(signal);
-                } catch (ex) {
-                    console.error(ex);
-                }
+                const message = await this.#findMessage();
                 if (signal.aborted) {
                     return Outcome.ABORTED;
                 }
@@ -1417,8 +1439,23 @@
                     continue;
                 }
 
-                // PageLoad.END. A slow fetch looks exactly like the top of the thread, so
-                // only believe it after several confirmations in a row.
+                // PageLoad.END. Before counting that, sweep the whole loaded thread
+                // once: scans only ever move away from the newest message, so this is
+                // where a row that Instagram had not rendered in time gets picked up.
+                this.#setStatus("Checking for messages we scrolled past…");
+                const missed = await this.#findMessage({ fromNewest: true });
+                if (signal.aborted) {
+                    return Outcome.ABORTED;
+                }
+                if (missed !== null) {
+                    endConfirmations = 0;
+                    stalls = 0;
+                    await this.#unsendOne(missed);
+                    continue;
+                }
+
+                // A slow fetch looks exactly like the top of the thread, so only believe
+                // it after several confirmations in a row.
                 endConfirmations++;
                 if (endConfirmations >= LIMITS.endConfirmations) {
                     return Outcome.DONE;
@@ -1430,6 +1467,23 @@
             }
 
             return Outcome.ABORTED;
+        }
+
+        /**
+         * Looks for the next message to unsend. A broken lookup must not end the run, so
+         * failures are logged and reported as "nothing found", which sends the sweep on
+         * to loading an older page.
+         *
+         * @param {{fromNewest?: boolean}} [options] - forwarded to the thread
+         * @returns {Promise<MessageRow|null>}
+         */
+        async #findMessage(options) {
+            try {
+                return await this.thread.findNextOwnMessage(this.abortController.signal, options);
+            } catch (ex) {
+                console.error(ex);
+                return null;
+            }
         }
 
         /**
@@ -2153,10 +2207,15 @@
          * While a run is in progress Instagram must not receive keyboard input, or a
          * stray key can navigate away mid-unsend. Escape is reserved for stopping.
          *
+         * Only real key presses count. The unsend workflow presses Escape itself to
+         * close a menu or dialog a failed message left open, and swallowing that both
+         * ended the run on the first recoverable failure and stopped the key from
+         * reaching Instagram, so the overlay it was meant to dismiss stayed open.
+         *
          * @param {KeyboardEvent} event
          */
         #lockKeyboard(event) {
-            if (this.#run.isRunning() === false) {
+            if (this.#run.isRunning() === false || event.isTrusted === false) {
                 return;
             }
             if (event.type === "keydown" && event.key === "Escape") {
