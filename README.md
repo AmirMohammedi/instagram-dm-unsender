@@ -1,6 +1,6 @@
 # Instagram DM Unsender
 
-[![Install with Tampermonkey](https://img.shields.io/badge/Install%20with-Tampermonkey-blue?logo=tampermonkey)](https://raw.githubusercontent.com/AmirMohammedi/instagram-dm-unsender/main/idmu.user.js)
+[![Install with Tampermonkey](https://img.shields.io/badge/Install%20with-Tampermonkey-blue?logo=tampermonkey)](https://github.com/AmirMohammedi/instagram-dm-unsender/releases/latest/download/idmu.user.js)
 
 A userscript that unsends every message **you** sent in an Instagram DM thread, one at a time, from the newest backwards — built to survive conversations with tens of thousands of messages.
 

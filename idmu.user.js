@@ -7,6 +7,8 @@
 // @author				Amir Elcharif Mohammedi (https://github.com/amirMohammedi)
 // @homepageURL			https://github.com/amirMohammedi
 // @supportURL			https://github.com/amirMohammedi
+// @downloadURL			https://github.com/AmirMohammedi/instagram-dm-unsender/releases/latest/download/idmu.user.js
+// @updateURL			https://github.com/AmirMohammedi/instagram-dm-unsender/releases/latest/download/idmu.user.js
 // @icon				https://www.instagram.com/favicon.ico
 // @version				1.0.0
 // @description			Unsend every DM you sent in an Instagram thread — built to survive very long conversations.
